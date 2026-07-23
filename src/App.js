@@ -724,11 +724,9 @@ function SalesModule({ isMobile }) {
 
 // ── Prospects Module ──────────────────────────────────────────────────────────
 
-const OPTIONAL_ENUM_FIELDS = ["name_sanity_ok", "website_found", "website_quality", "gbp_status", "fit_check_passed", "persona"];
-
 function sanitizeProspectPayload(form) {
   const payload = { ...form };
-  OPTIONAL_ENUM_FIELDS.forEach(k => { if (payload[k] === "") payload[k] = null; });
+  Object.keys(payload).forEach(k => { if (payload[k] === "") payload[k] = null; });
   return payload;
 }
 
