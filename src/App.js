@@ -724,21 +724,65 @@ function SalesModule({ isMobile }) {
 
 // ── Prospects Module ──────────────────────────────────────────────────────────
 
+const OPTIONAL_ENUM_FIELDS = ["name_sanity_ok", "website_found", "website_quality", "gbp_status", "fit_check_passed", "persona"];
+
+function sanitizeProspectPayload(form) {
+  const payload = { ...form };
+  OPTIONAL_ENUM_FIELDS.forEach(k => { if (payload[k] === "") payload[k] = null; });
+  return payload;
+}
+
+function SelectField({ label, value, onChange, options, placeholder = "Not set" }) {
+  const s = { background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, color: "#f0ebe0", fontSize: 13, padding: "8px 12px", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", appearance: "none" };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      {label && <label style={{ fontSize: 11, color: "#555", letterSpacing: 0.5 }}>{label}</label>}
+      <select value={value || ""} onChange={e => onChange(e.target.value)} style={s}>
+        <option value="">{placeholder}</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function ProspectsModule({ isMobile }) {
-  const [prospects, setProspects] = useState([]); const [loading, setLoading] = useState(true); const [showForm, setShowForm] = useState(false); const [selected, setSelected] = useState(null); const [filter, setFilter] = useState("all");
+  const [prospects, setProspects] = useState([]); const [loading, setLoading] = useState(true); const [showForm, setShowForm] = useState(false); const [selected, setSelected] = useState(null); const [filter, setFilter] = useState("all"); const [error, setError] = useState(null);
   const blank = { date_sourced: new Date().toISOString().slice(0, 10), business_name: "", org_nr: "", naeringskode: "", business_type: "", address: "", registered_date: "", lead_source: "new-starter", name_sanity_ok: "", website_found: "", website_note: "", website_quality: "", gbp_status: "", false_positive_risk: "no", false_positive_note: "", fit_check_passed: "", persona: "", gap_note: "", contact_route: "", status: "new", notes: "" };
   const [form, setForm] = useState(blank);
-  const load = useCallback(async () => { setLoading(true); const { data } = await db.from("prospects").select("*").order("created_at", { ascending: false }); setProspects(data || []); setLoading(false); }, []);
+  const load = useCallback(async () => { setLoading(true); const { data, error: loadError } = await db.from("prospects").select("*").order("created_at", { ascending: false }); if (loadError) setError(loadError.message); setProspects(data || []); setLoading(false); }, []);
   useEffect(() => { load(); }, [load]);
-  const save = async () => { if (!form.business_name.trim()) return; if (selected) { await db.from("prospects").update({ ...form, updated_at: new Date().toISOString() }).eq("id", selected.id); } else { await db.from("prospects").insert(form); await db.from("activity").insert({ text: `New prospect: ${form.business_name}`, module: "prospects", type: "new" }); } setShowForm(false); setSelected(null); setForm(blank); load(); };
-  const remove = async (id, name) => { if (!window.confirm(`Remove ${name}?`)) return; await db.from("prospects").delete().eq("id", id); setShowForm(false); load(); };
-  const openEdit = (p) => { const clean = {}; Object.keys(blank).forEach(k => { clean[k] = p[k] ?? blank[k]; }); setSelected(p); setForm(clean); setShowForm(true); };
-  const pushToOutreach = async () => { if (!selected) return; await db.from("outreach").insert({ name: form.business_name, business: form.business_name, channel: "email", status: "draft", message: form.gap_note ? `Gap: ${form.gap_note}${form.contact_route ? ` (via ${form.contact_route})` : ""}` : "", notes: `From Prospects. Persona: ${form.persona || "unset"}. Org nr: ${form.org_nr || "unknown"}.` }); await db.from("prospects").update({ status: "drafted", updated_at: new Date().toISOString() }).eq("id", selected.id); await db.from("activity").insert({ text: `${form.business_name} sent to Outreach`, module: "prospects", type: "handoff" }); setShowForm(false); setSelected(null); setForm(blank); load(); };
+  const save = async () => {
+    if (!form.business_name.trim()) return;
+    setError(null);
+    const payload = sanitizeProspectPayload(form);
+    if (selected) {
+      const { error: saveError } = await db.from("prospects").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", selected.id);
+      if (saveError) { setError(saveError.message); return; }
+    } else {
+      const { error: saveError } = await db.from("prospects").insert(payload);
+      if (saveError) { setError(saveError.message); return; }
+      await db.from("activity").insert({ text: `New prospect: ${form.business_name}`, module: "prospects", type: "new" });
+    }
+    setShowForm(false); setSelected(null); setForm(blank); load();
+  };
+  const remove = async (id, name) => { if (!window.confirm(`Remove ${name}?`)) return; const { error: removeError } = await db.from("prospects").delete().eq("id", id); if (removeError) { setError(removeError.message); return; } setShowForm(false); load(); };
+  const openEdit = (p) => { const clean = {}; Object.keys(blank).forEach(k => { clean[k] = p[k] ?? blank[k]; }); setSelected(p); setForm(clean); setError(null); setShowForm(true); };
+  const pushToOutreach = async () => {
+    if (!selected) return;
+    setError(null);
+    const { error: outreachError } = await db.from("outreach").insert({ name: form.business_name, business: form.business_name, channel: "email", status: "draft", message: form.gap_note ? `Gap: ${form.gap_note}${form.contact_route ? ` (via ${form.contact_route})` : ""}` : "", notes: `From Prospects. Persona: ${form.persona || "unset"}. Org nr: ${form.org_nr || "unknown"}.` });
+    if (outreachError) { setError(outreachError.message); return; }
+    const { error: statusError } = await db.from("prospects").update({ status: "drafted", updated_at: new Date().toISOString() }).eq("id", selected.id);
+    if (statusError) { setError(statusError.message); return; }
+    await db.from("activity").insert({ text: `${form.business_name} sent to Outreach`, module: "prospects", type: "handoff" });
+    setShowForm(false); setSelected(null); setForm(blank); load();
+  };
   const filtered = filter === "all" ? prospects : filter === "false-positive" ? prospects.filter(p => p.false_positive_risk === "yes") : prospects.filter(p => p.status === filter);
   const counts = PROSPECT_STATUSES.reduce((acc, s) => { acc[s] = prospects.filter(p => p.status === s).length; return acc; }, {});
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}><div><h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 500, margin: 0, color: GOLD }}>Prospects</h1><p style={{ fontSize: 12.5, color: "#555", margin: "4px 0 0" }}>{prospects.length} sourced · {counts["ready-to-draft"] || 0} ready to draft</p></div><Btn onClick={() => { setSelected(null); setForm(blank); setShowForm(true); }} color={GOLD}>+ New Prospect</Btn></div>
+      {error && <div style={{ background: `${CORAL}18`, border: `1px solid ${CORAL}50`, color: CORAL, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 20 }}>{error}</div>}
       <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>{["all", ...PROSPECT_STATUSES, "false-positive"].map(s => (<button key={s} onClick={() => setFilter(s)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${filter === s ? (STATUS_COLORS[s] || CORAL) : BORDER}`, background: filter === s ? `${STATUS_COLORS[s] || CORAL}15` : "transparent", color: filter === s ? (STATUS_COLORS[s] || CORAL) : "#555", fontSize: 11, cursor: "pointer", fontFamily: "inherit", textTransform: "capitalize" }}>{s === "all" ? `All (${prospects.length})` : s === "false-positive" ? `Flagged (${prospects.filter(p => p.false_positive_risk === "yes").length})` : `${s} (${counts[s] || 0})`}</button>))}</div>
       {loading ? <div style={{ textAlign: "center", padding: 40, color: "#444" }}>Loading...</div> : filtered.length === 0 ? <EmptyState icon="◎" text="No prospects yet" sub='Click "+ New Prospect" after sourcing a batch from Brreg' /> : (<div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{filtered.map(p => (<div key={p.id} style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={() => openEdit(p)}><div style={{ flex: 1, minWidth: 0 }}><div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 500, color: "#f0ebe0" }}>{p.business_name}</span>{p.business_type && <span style={{ fontSize: 11, color: "#555" }}>{p.business_type}</span>}</div><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}><Pill label={p.status} color={STATUS_COLORS[p.status] || "#555"} />{p.persona && <Pill label={p.persona} color={PERSONA_COLORS[p.persona] || "#555"} />}{p.false_positive_risk === "yes" && <Pill label="false positive risk" color={CORAL} />}{p.gap_note && <span style={{ fontSize: 11, color: "#444" }}>{p.gap_note}</span>}</div></div><button onClick={e => { e.stopPropagation(); remove(p.id, p.business_name); }} style={{ background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: 16, padding: 4, flexShrink: 0 }}>×</button></div>))}</div>)}
       {showForm && (<Modal title={selected ? "Edit Prospect" : "New Prospect"} onClose={() => { setShowForm(false); setSelected(null); }} color={GOLD}><div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -750,21 +794,21 @@ function ProspectsModule({ isMobile }) {
         <Input label="Lead source" value={form.lead_source} onChange={v => setForm(f => ({ ...f, lead_source: v }))} options={PROSPECT_LEAD_SOURCES} />
 
         <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginTop: 6 }}>Step 2: Sanity check</div>
-        <Input label="Name looks like a real operation?" value={form.name_sanity_ok} onChange={v => setForm(f => ({ ...f, name_sanity_ok: v }))} options={YES_NO} />
+        <SelectField label="Name looks like a real operation?" value={form.name_sanity_ok} onChange={v => setForm(f => ({ ...f, name_sanity_ok: v }))} options={YES_NO} />
 
         <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginTop: 6 }}>Step 3: Digital presence</div>
-        <Input label="Website found?" value={form.website_found} onChange={v => setForm(f => ({ ...f, website_found: v }))} options={YES_NO} />
+        <SelectField label="Website found?" value={form.website_found} onChange={v => setForm(f => ({ ...f, website_found: v }))} options={YES_NO} />
         <Input label="Website URL / note" value={form.website_note} onChange={v => setForm(f => ({ ...f, website_note: v }))} />
-        <Input label="Website quality" value={form.website_quality} onChange={v => setForm(f => ({ ...f, website_quality: v }))} options={PROSPECT_WEBSITE_QUALITY} />
-        <Input label="GBP status" value={form.gbp_status} onChange={v => setForm(f => ({ ...f, gbp_status: v }))} options={PROSPECT_GBP_STATUSES} />
+        <SelectField label="Website quality" value={form.website_quality} onChange={v => setForm(f => ({ ...f, website_quality: v }))} options={PROSPECT_WEBSITE_QUALITY} />
+        <SelectField label="GBP status" value={form.gbp_status} onChange={v => setForm(f => ({ ...f, gbp_status: v }))} options={PROSPECT_GBP_STATUSES} />
         <Input label="False positive risk?" value={form.false_positive_risk} onChange={v => setForm(f => ({ ...f, false_positive_risk: v }))} options={YES_NO} />
         {form.false_positive_risk === "yes" && <Input label="Why (e.g. ownership change at an established address)" value={form.false_positive_note} onChange={v => setForm(f => ({ ...f, false_positive_note: v }))} type="textarea" />}
 
         <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginTop: 6 }}>Step 4: Fit check</div>
-        <Input label="Fit check passed?" value={form.fit_check_passed} onChange={v => setForm(f => ({ ...f, fit_check_passed: v }))} options={YES_NO} />
+        <SelectField label="Fit check passed?" value={form.fit_check_passed} onChange={v => setForm(f => ({ ...f, fit_check_passed: v }))} options={YES_NO} />
 
         <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: GOLD, marginTop: 6 }}>Step 5: Categorise</div>
-        <Input label="Persona" value={form.persona} onChange={v => setForm(f => ({ ...f, persona: v }))} options={PROSPECT_PERSONAS} />
+        <SelectField label="Persona" value={form.persona} onChange={v => setForm(f => ({ ...f, persona: v }))} options={PROSPECT_PERSONAS} />
         <Input label="Gap note" value={form.gap_note} onChange={v => setForm(f => ({ ...f, gap_note: v }))} placeholder="Placeholder test-domain site, no GBP" />
         <Input label="Best contact route" value={form.contact_route} onChange={v => setForm(f => ({ ...f, contact_route: v }))} />
 
